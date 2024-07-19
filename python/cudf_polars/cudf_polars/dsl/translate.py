@@ -359,7 +359,7 @@ def _(node: pl_expr.Function, visitor: NodeTraverser, dtype: plc.DataType) -> ex
             lop, rop = expr.BooleanFunction._BETWEEN_OPS[closed]
             return expr.BinOp(
                 dtype,
-                plc.binaryop.BinaryOperator.LOGICAL_AND,
+                pl_expr.Operator.LogicalAnd,
                 expr.BinOp(dtype, lop, column, lo),
                 expr.BinOp(dtype, rop, column, hi),
             )
@@ -494,9 +494,10 @@ def _(node: pl_expr.Ternary, visitor: NodeTraverser, dtype: plc.DataType) -> exp
 def _(
     node: pl_expr.BinaryExpr, visitor: NodeTraverser, dtype: plc.DataType
 ) -> expr.Expr:
+    print(expr.BinOp._MAPPING[node.op])
     return expr.BinOp(
         dtype,
-        expr.BinOp._MAPPING[node.op],
+        node.op,
         translate_expr(visitor, n=node.left),
         translate_expr(visitor, n=node.right),
     )

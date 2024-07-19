@@ -241,6 +241,8 @@ class Scan(IR):
         options = self.file_options
         with_columns = options.with_columns
         row_index = options.row_index
+        # Whether we need to filter w/ the predicate after reading
+        needs_post_filter = True
         if self.typ == "csv":
             dtype_map = {
                 name: cudf._lib.types.PYLIBCUDF_TO_SUPPORTED_NUMPY_TYPES[typ.id()]
@@ -307,18 +309,26 @@ class Scan(IR):
                 )
             df = DataFrame.from_cudf(cudf.concat(pieces))
         elif self.typ == "parquet":
+            num_rows = (
+                self.file_options.n_rows if self.file_options.n_rows is not None else -1
+            )
+            filters = (
+                self.predicate.value.as_pylibcudf_ast()
+                if self.predicate is not None
+                else None
+            )
             tbl_w_meta = plc.io.parquet.read_parquet(
                 plc.io.SourceInfo(self.paths),
                 columns=with_columns,
-                num_rows=self.file_options.n_rows
-                if self.file_options.n_rows is not None
-                else -1,
+                num_rows=num_rows,
+                filters=filters,
             )
             df = DataFrame.from_table(
                 tbl_w_meta.tbl,
                 # TODO: consider nested column names?
                 tbl_w_meta.column_names(include_children=False),
             )
+            needs_post_filter = filters is None
         else:
             raise NotImplementedError(
                 f"Unhandled scan type: {self.typ}"
@@ -354,7 +364,8 @@ class Scan(IR):
         # )
         if self.predicate is None:
             return df
-        else:
+        elif needs_post_filter:
+            # Parquet filtering is done above
             (mask,) = broadcast(self.predicate.evaluate(df), target_length=df.num_rows)
             return df.filter(mask)
 

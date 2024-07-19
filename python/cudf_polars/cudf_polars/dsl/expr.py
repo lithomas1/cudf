@@ -273,6 +273,20 @@ class Expr:
             f"Collecting aggregation info for {type(self).__name__}"
         )  # pragma: no cover; check_agg trips first
 
+    def as_pylibcudf_ast(self):
+        """
+        Returns this expression as a pylibcudf AST
+        (to use as a filter in the parquet reader)
+        if conversion is possible.
+
+        Returns
+        -------
+        Optional[pylibcudf.expressions.Expression]
+            The converted AST. None is returned if
+            conversion is not possible.
+        """
+        return None
+
 
 class NamedExpr:
     # NamedExpr does not inherit from Expr since it does not appear
@@ -370,6 +384,9 @@ class Literal(Expr):
         # datatype of pyarrow scalar is correct by construction.
         return Column(plc.Column.from_scalar(plc.interop.from_arrow(self.value), 1))
 
+    def as_pylibcudf_ast(self):
+        return plc.expressions.Literal(plc.interop.from_arrow(self.value))
+
 
 class LiteralColumn(Expr):
     __slots__ = ("value",)
@@ -417,6 +434,9 @@ class Col(Expr):
     def collect_agg(self, *, depth: int) -> AggInfo:
         """Collect information about aggregations in groupbys."""
         return AggInfo([(self, plc.aggregation.collect_list(), self)])
+
+    def as_pylibcudf_ast(self):
+        return plc.expressions.ColumnNameReference(self.name)
 
 
 class Len(Expr):
@@ -507,20 +527,20 @@ class BooleanFunction(Expr):
         ]
     ] = {
         "none": (
-            plc.binaryop.BinaryOperator.GREATER,
-            plc.binaryop.BinaryOperator.LESS,
+            pl_expr.Operator.Gt,
+            pl_expr.Operator.Lt,
         ),
         "left": (
-            plc.binaryop.BinaryOperator.GREATER_EQUAL,
-            plc.binaryop.BinaryOperator.LESS,
+            pl_expr.Operator.GtEq,
+            pl_expr.Operator.Lt,
         ),
         "right": (
-            plc.binaryop.BinaryOperator.GREATER,
-            plc.binaryop.BinaryOperator.LESS_EQUAL,
+            pl_expr.Operator.Gt,
+            pl_expr.Operator.LtEq,
         ),
         "both": (
-            plc.binaryop.BinaryOperator.GREATER_EQUAL,
-            plc.binaryop.BinaryOperator.LESS_EQUAL,
+            pl_expr.Operator.GtEq,
+            pl_expr.Operator.LtEq,
         ),
     }
 
@@ -677,6 +697,13 @@ class BooleanFunction(Expr):
             raise NotImplementedError(
                 f"BooleanFunction {self.name}"
             )  # pragma: no cover; handled by init raising
+
+    def as_pylibcudf_ast(self):
+        # Unary operations not supported on column references
+        # so not probably? not worth implementing here
+        # TODO: consider revisiting when libcudf supports
+        # unary operations on column references
+        return None
 
 
 class StringFunction(Expr):
@@ -1370,12 +1397,13 @@ class BinOp(Expr):
     def __init__(
         self,
         dtype: plc.DataType,
-        op: plc.binaryop.BinaryOperator,
+        op: pl_expr.Operator,
         left: Expr,
         right: Expr,
     ) -> None:
         super().__init__(dtype)
         self.op = op
+        op = BinOp._MAPPING[op]
         self.children = (left, right)
         if (
             op in (plc.binaryop.BinaryOperator.ADD, plc.binaryop.BinaryOperator.SUB)
@@ -1408,6 +1436,29 @@ class BinOp(Expr):
         pl_expr.Operator.LogicalOr: plc.binaryop.BinaryOperator.LOGICAL_OR,
     }
 
+    _PLC_AST_MAPPING: dict[pl_expr.Operator, plc.binaryop.BinaryOperator] = {
+        pl_expr.Operator.Eq: plc.expressions.ASTOperator.EQUAL,
+        # pl_expr.Operator.EqValidity: plc.binaryop.BinaryOperator.NULL_EQUALS,
+        pl_expr.Operator.NotEq: plc.expressions.ASTOperator.NOT_EQUAL,
+        # pl_expr.Operator.NotEqValidity: plc.binaryop.BinaryOperator.NULL_NOT_EQUALS,
+        pl_expr.Operator.Lt: plc.expressions.ASTOperator.LESS,
+        pl_expr.Operator.LtEq: plc.expressions.ASTOperator.LESS_EQUAL,
+        pl_expr.Operator.Gt: plc.expressions.ASTOperator.GREATER,
+        pl_expr.Operator.GtEq: plc.expressions.ASTOperator.GREATER_EQUAL,
+        # pl_expr.Operator.Plus: plc.binaryop.BinaryOperator.ADD,
+        # pl_expr.Operator.Minus: plc.binaryop.BinaryOperator.SUB,
+        # pl_expr.Operator.Multiply: plc.binaryop.BinaryOperator.MUL,
+        # pl_expr.Operator.Divide: plc.binaryop.BinaryOperator.DIV,
+        # pl_expr.Operator.TrueDivide: plc.binaryop.BinaryOperator.TRUE_DIV,
+        # pl_expr.Operator.FloorDivide: plc.binaryop.BinaryOperator.FLOOR_DIV,
+        # pl_expr.Operator.Modulus: plc.binaryop.BinaryOperator.PYMOD,
+        pl_expr.Operator.And: plc.expressions.ASTOperator.BITWISE_AND,
+        pl_expr.Operator.Or: plc.expressions.ASTOperator.BITWISE_OR,
+        pl_expr.Operator.Xor: plc.expressions.ASTOperator.BITWISE_XOR,
+        pl_expr.Operator.LogicalAnd: plc.expressions.ASTOperator.LOGICAL_AND,
+        pl_expr.Operator.LogicalOr: plc.expressions.ASTOperator.LOGICAL_OR,
+    }
+
     def do_evaluate(
         self,
         df: DataFrame,
@@ -1428,7 +1479,20 @@ class BinOp(Expr):
             elif right.is_scalar:
                 rop = right.obj_scalar
         return Column(
-            plc.binaryop.binary_operation(lop, rop, self.op, self.dtype),
+            plc.binaryop.binary_operation(
+                lop, rop, BinOp._MAPPING[self.op], self.dtype
+            ),
+        )
+
+    def as_pylibcudf_ast(self):
+        operands = [child.as_pylibcudf_ast() for child in self.children]
+        # TODO: make sure that this is robust to argument order
+        if isinstance(operands[0], Col) and not isinstance(operands[1], Literal):
+            # libcudf can only do operations with a ColumnNameReference
+            # against a literal
+            return None
+        return plc.expressions.Operation(
+            BinOp._PLC_AST_MAPPING[self.pl_op], operands[0], operands[1]
         )
 
     def collect_agg(self, *, depth: int) -> AggInfo:
