@@ -494,7 +494,6 @@ def _(node: pl_expr.Ternary, visitor: NodeTraverser, dtype: plc.DataType) -> exp
 def _(
     node: pl_expr.BinaryExpr, visitor: NodeTraverser, dtype: plc.DataType
 ) -> expr.Expr:
-    print(expr.BinOp._MAPPING[node.op])
     return expr.BinOp(
         dtype,
         node.op,

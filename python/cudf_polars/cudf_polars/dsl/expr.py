@@ -387,6 +387,10 @@ class Literal(Expr):
     def as_pylibcudf_ast(self):
         return plc.expressions.Literal(plc.interop.from_arrow(self.value))
 
+    def collect_agg(self, *, depth: int) -> AggInfo:
+        """Collect information about aggregations in groupbys."""
+        return AggInfo([])
+
 
 class LiteralColumn(Expr):
     __slots__ = ("value",)
@@ -1452,8 +1456,16 @@ class BinOp(Expr):
         # pl_expr.Operator.TrueDivide: plc.binaryop.BinaryOperator.TRUE_DIV,
         # pl_expr.Operator.FloorDivide: plc.binaryop.BinaryOperator.FLOOR_DIV,
         # pl_expr.Operator.Modulus: plc.binaryop.BinaryOperator.PYMOD,
-        pl_expr.Operator.And: plc.expressions.ASTOperator.BITWISE_AND,
-        pl_expr.Operator.Or: plc.expressions.ASTOperator.BITWISE_OR,
+
+        # TODO: is this right? bitwise_and and bitwise_or don't produce
+        # booleans at the end
+        # I think regular evaluation forces the boolean dtype by passing
+        # it to binaryop
+        # pl_expr.Operator.And: plc.expressions.ASTOperator.BITWISE_AND,
+        # pl_expr.Operator.Or: plc.expressions.ASTOperator.BITWISE_OR,
+        pl_expr.Operator.And: plc.expressions.ASTOperator.LOGICAL_AND,
+        pl_expr.Operator.Or: plc.expressions.ASTOperator.LOGICAL_OR,
+
         pl_expr.Operator.Xor: plc.expressions.ASTOperator.BITWISE_XOR,
         pl_expr.Operator.LogicalAnd: plc.expressions.ASTOperator.LOGICAL_AND,
         pl_expr.Operator.LogicalOr: plc.expressions.ASTOperator.LOGICAL_OR,
@@ -1486,13 +1498,15 @@ class BinOp(Expr):
 
     def as_pylibcudf_ast(self):
         operands = [child.as_pylibcudf_ast() for child in self.children]
+        if any(op is None for op in operands):
+            return None
         # TODO: make sure that this is robust to argument order
-        if isinstance(operands[0], Col) and not isinstance(operands[1], Literal):
+        if isinstance(self.children[0], Col) and not isinstance(self.children[1], Literal):
             # libcudf can only do operations with a ColumnNameReference
             # against a literal
             return None
         return plc.expressions.Operation(
-            BinOp._PLC_AST_MAPPING[self.pl_op], operands[0], operands[1]
+            BinOp._PLC_AST_MAPPING[self.op], operands[0], operands[1]
         )
 
     def collect_agg(self, *, depth: int) -> AggInfo:
