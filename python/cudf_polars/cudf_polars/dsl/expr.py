@@ -403,6 +403,13 @@ class LiteralColumn(Expr):
         data = value.to_arrow()
         self.value = data.cast(dtypes.downcast_arrow_lists(data.type))
 
+    def get_hash(self) -> int:
+        """Compute a hash of the column."""
+        # This is stricter than necessary, but we only need this hash
+        # for identity in groupby replacements so it's OK. And this
+        # way we avoid doing potentially expensive compute.
+        return hash((type(self), self.dtype, id(self.value)))
+
     def do_evaluate(
         self,
         df: DataFrame,
@@ -413,6 +420,10 @@ class LiteralColumn(Expr):
         """Evaluate this expression given a dataframe for context."""
         # datatype of pyarrow array is correct by construction.
         return Column(plc.interop.from_arrow(self.value))
+
+    def collect_agg(self, *, depth: int) -> AggInfo:
+        """Collect information about aggregations in groupbys."""
+        return AggInfo([])
 
 
 class Col(Expr):
@@ -898,7 +909,14 @@ class UnaryFunction(Expr):
         self.name = name
         self.options = options
         self.children = children
-        if self.name not in ("mask_nans", "round", "setsorted", "unique"):
+        if self.name not in (
+            "mask_nans",
+            "round",
+            "setsorted",
+            "unique",
+            "dropnull",
+            "fill_null",
+        ):
             raise NotImplementedError(f"Unary function {name=}")
 
     def do_evaluate(
@@ -984,6 +1002,27 @@ class UnaryFunction(Expr):
                 order=order,
                 null_order=null_order,
             )
+        elif self.name == "dropnull":
+            (column,) = (
+                child.evaluate(df, context=context, mapping=mapping)
+                for child in self.children
+            )
+            return Column(
+                plc.stream_compaction.drop_nulls(
+                    plc.Table([column.obj]), [0], 1
+                ).columns()[0]
+            )
+        elif self.name == "fill_null":
+            column = self.children[0].evaluate(df, context=context, mapping=mapping)
+            if isinstance(self.children[1], Literal):
+                arg = plc.interop.from_arrow(self.children[1].value)
+            else:
+                evaluated = self.children[1].evaluate(
+                    df, context=context, mapping=mapping
+                )
+                arg = evaluated.obj_scalar if evaluated.is_scalar else evaluated.obj
+            return Column(plc.replace.replace_nulls(column.obj, arg))
+
         raise NotImplementedError(
             f"Unimplemented unary function {self.name=}"
         )  # pragma: no cover; init trips first
@@ -1176,6 +1215,10 @@ class Cast(Expr):
     def __init__(self, dtype: plc.DataType, value: Expr) -> None:
         super().__init__(dtype)
         self.children = (value,)
+        if not plc.unary.is_supported_cast(self.dtype, value.dtype):
+            raise NotImplementedError(
+                f"Can't cast {self.dtype.id().name} to {value.dtype.id().name}"
+            )
 
     def do_evaluate(
         self,
@@ -1440,7 +1483,7 @@ class BinOp(Expr):
         pl_expr.Operator.LogicalOr: plc.binaryop.BinaryOperator.LOGICAL_OR,
     }
 
-    _PLC_AST_MAPPING: dict[pl_expr.Operator, plc.binaryop.BinaryOperator] = {
+    _PLC_AST_MAPPING: ClassVar[dict[pl_expr.Operator, plc.binaryop.BinaryOperator]] = {
         pl_expr.Operator.Eq: plc.expressions.ASTOperator.EQUAL,
         # pl_expr.Operator.EqValidity: plc.binaryop.BinaryOperator.NULL_EQUALS,
         pl_expr.Operator.NotEq: plc.expressions.ASTOperator.NOT_EQUAL,
@@ -1456,7 +1499,6 @@ class BinOp(Expr):
         # pl_expr.Operator.TrueDivide: plc.binaryop.BinaryOperator.TRUE_DIV,
         # pl_expr.Operator.FloorDivide: plc.binaryop.BinaryOperator.FLOOR_DIV,
         # pl_expr.Operator.Modulus: plc.binaryop.BinaryOperator.PYMOD,
-
         # TODO: is this right? bitwise_and and bitwise_or don't produce
         # booleans at the end
         # I think regular evaluation forces the boolean dtype by passing
@@ -1465,7 +1507,6 @@ class BinOp(Expr):
         # pl_expr.Operator.Or: plc.expressions.ASTOperator.BITWISE_OR,
         pl_expr.Operator.And: plc.expressions.ASTOperator.LOGICAL_AND,
         pl_expr.Operator.Or: plc.expressions.ASTOperator.LOGICAL_OR,
-
         pl_expr.Operator.Xor: plc.expressions.ASTOperator.BITWISE_XOR,
         pl_expr.Operator.LogicalAnd: plc.expressions.ASTOperator.LOGICAL_AND,
         pl_expr.Operator.LogicalOr: plc.expressions.ASTOperator.LOGICAL_OR,
@@ -1501,7 +1542,9 @@ class BinOp(Expr):
         if any(op is None for op in operands):
             return None
         # TODO: make sure that this is robust to argument order
-        if isinstance(self.children[0], Col) and not isinstance(self.children[1], Literal):
+        if isinstance(self.children[0], Col) and not isinstance(
+            self.children[1], Literal
+        ):
             # libcudf can only do operations with a ColumnNameReference
             # against a literal
             return None
