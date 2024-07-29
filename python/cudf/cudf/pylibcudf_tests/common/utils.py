@@ -335,6 +335,58 @@ def make_source(path_or_buf, pa_table, format, **kwargs):
     return path_or_buf
 
 
+def _get_vals_of_type(pa_type, length, seed):
+    """
+    Returns an list-like of random values of that type
+    """
+    rng = np.random.default_rng(seed=seed)
+    if pa_type == pa.int64():
+        half = length // 2
+        negs = rng.integers(-length, 0, half, dtype=np.int64)
+        pos = rng.integers(0, length, length - half, dtype=np.int64)
+        return np.concatenate([negs, pos])
+    elif pa_type == pa.uint64():
+        return rng.integers(0, length, length, dtype=np.uint64)
+    elif pa_type == pa.float64():
+        # Round to 6 decimal places or else we have problems comparing our
+        # output to pandas due to floating point/rounding differences
+        return rng.uniform(-length, length, length).round(6)
+    elif pa_type == pa.bool_():
+        return rng.integers(0, 2, length, dtype=bool)
+    elif pa_type == pa.string():
+        # Generate random ASCII strings
+        strs = []
+        for _ in range(length):
+            chrs = rng.integers(33, 128, length)
+            strs.append("".join(chr(x) for x in chrs))
+        return strs
+    elif pa.types.is_nested(pa_type):
+        # recurse to get vals for children
+        rand_arrs = []
+        for i in range(pa_type.num_fields):
+            rand_arr = _get_vals_of_type(
+                pa_type.field(i).type, length=length, seed=seed
+            )
+            rand_arrs.append(rand_arr)
+
+        if isinstance(pa_type, pa.StructType):
+            pa_array = pa.StructArray.from_arrays(
+                [rand_arr for rand_arr in rand_arrs],
+                fields=[pa_type.field(i) for i in range(pa_type.num_fields)],
+            )
+        else:
+            # ListType
+            pa_array = pa.array(
+                [list(row_vals) for row_vals in zip(rand_arrs[0])],
+                type=pa_type,
+            )
+        return pa_array
+    else:
+        raise NotImplementedError(
+            f"random data generation not implemented for {pa_type}"
+        )
+
+
 NUMERIC_PA_TYPES = [pa.int64(), pa.float64(), pa.uint64()]
 STRING_PA_TYPES = [pa.string()]
 BOOL_PA_TYPES = [pa.bool_()]

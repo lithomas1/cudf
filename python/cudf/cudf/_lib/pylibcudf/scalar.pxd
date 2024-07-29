@@ -1,5 +1,6 @@
 # Copyright (c) 2023-2024, NVIDIA CORPORATION.
 
+from libc.stdint cimport int32_t, int64_t
 from libcpp cimport bool
 from libcpp.memory cimport unique_ptr
 
@@ -23,6 +24,8 @@ cdef class Scalar:
 
     cpdef DataType type(self)
     cpdef bool is_valid(self)
+
+    cdef void _init_from_arrow(self, value, DataType dtype)
 
     @staticmethod
     cdef Scalar from_libcudf(unique_ptr[scalar] libcudf_scalar, dtype=*)

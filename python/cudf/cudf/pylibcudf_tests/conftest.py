@@ -6,7 +6,6 @@ import os
 import pathlib
 import sys
 
-import numpy as np
 import pyarrow as pa
 import pytest
 
@@ -15,7 +14,12 @@ from cudf._lib.pylibcudf.io.types import CompressionType
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "common"))
 
-from utils import ALL_PA_TYPES, DEFAULT_PA_TYPES, NUMERIC_PA_TYPES
+from utils import (
+    ALL_PA_TYPES,
+    DEFAULT_PA_TYPES,
+    NUMERIC_PA_TYPES,
+    _get_vals_of_type,
+)
 
 
 # This fixture defines the standard set of types that all tests should default to
@@ -36,37 +40,6 @@ def pa_type(request):
 )
 def numeric_pa_type(request):
     return request.param
-
-
-def _get_vals_of_type(pa_type, length, seed):
-    """
-    Returns an list-like of random values of that type
-    """
-    rng = np.random.default_rng(seed=seed)
-    if pa_type == pa.int64():
-        half = length // 2
-        negs = rng.integers(-length, 0, half, dtype=np.int64)
-        pos = rng.integers(0, length, length - half, dtype=np.int64)
-        return np.concatenate([negs, pos])
-    elif pa_type == pa.uint64():
-        return rng.integers(0, length, length, dtype=np.uint64)
-    elif pa_type == pa.float64():
-        # Round to 6 decimal places or else we have problems comparing our
-        # output to pandas due to floating point/rounding differences
-        return rng.uniform(-length, length, length).round(6)
-    elif pa_type == pa.bool_():
-        return rng.integers(0, 2, length, dtype=bool)
-    elif pa_type == pa.string():
-        # Generate random ASCII strings
-        strs = []
-        for _ in range(length):
-            chrs = rng.integers(33, 128, length)
-            strs.append("".join(chr(x) for x in chrs))
-        return strs
-    else:
-        raise NotImplementedError(
-            f"random data generation not implemented for {pa_type}"
-        )
 
 
 # TODO: Consider adding another fixture/adapting this
@@ -91,41 +64,18 @@ def table_data(request):
 
     seed = 42
 
+    def _get_child_colnames(typ):
+        child_colnames = []
+        for i in range(typ.num_fields):
+            grandchild_colnames = _get_child_colnames(typ.field(i).type)
+            child_colnames.append((typ.field(i).name, grandchild_colnames))
+        return child_colnames
+
     for typ in ALL_PA_TYPES:
         child_colnames = []
-
-        def _generate_nested_data(typ):
-            child_colnames = []
-
-            # recurse to get vals for children
-            rand_arrs = []
-            for i in range(typ.num_fields):
-                rand_arr, grandchild_colnames = _generate_nested_data(
-                    typ.field(i).type
-                )
-                rand_arrs.append(rand_arr)
-                child_colnames.append((typ.field(i).name, grandchild_colnames))
-
-            if isinstance(typ, pa.StructType):
-                pa_array = pa.StructArray.from_arrays(
-                    [rand_arr for rand_arr in rand_arrs],
-                    names=[typ.field(i).name for i in range(typ.num_fields)],
-                )
-            elif isinstance(typ, pa.ListType):
-                pa_array = pa.array(
-                    [list(row_vals) for row_vals in zip(rand_arrs[0])],
-                    type=typ,
-                )
-                child_colnames.append(("", grandchild_colnames))
-            else:
-                # typ is scalar type
-                pa_array = pa.array(
-                    _get_vals_of_type(typ, nrows, seed=seed), type=typ
-                )
-            return pa_array, child_colnames
-
         if isinstance(typ, (pa.ListType, pa.StructType)):
-            rand_arr, child_colnames = _generate_nested_data(typ)
+            rand_arr = _get_vals_of_type(typ, nrows, seed=seed)
+            child_colnames = _get_child_colnames(rand_arr.type)
         else:
             rand_arr = pa.array(
                 _get_vals_of_type(typ, nrows, seed=seed), type=typ

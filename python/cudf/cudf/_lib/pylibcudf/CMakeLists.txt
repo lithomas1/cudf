@@ -52,7 +52,9 @@ rapids_cython_create_modules(
   SOURCE_FILES "${cython_sources}"
   LINKED_LIBRARIES "${linked_libraries}" MODULE_PREFIX pylibcudf_ ASSOCIATED_TARGETS cudf
 )
-link_to_pyarrow_headers(pylibcudf_interop)
+
+set(targets_using_arrow_headers pylibcudf_interop pylibcudf_scalar)
+link_to_pyarrow_headers("${targets_using_arrow_headers}")
 
 add_subdirectory(libcudf)
 add_subdirectory(strings)
