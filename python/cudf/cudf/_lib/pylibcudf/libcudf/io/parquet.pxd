@@ -14,6 +14,8 @@ cimport cudf._lib.pylibcudf.libcudf.table.table_view as cudf_table_view
 from cudf._lib.pylibcudf.libcudf.expressions cimport expression
 from cudf._lib.pylibcudf.libcudf.types cimport data_type, size_type
 
+from rmm._lib.cuda_stream_view cimport cuda_stream_view
+
 
 cdef extern from "cudf/io/parquet.hpp" namespace "cudf::io" nogil:
     cdef cppclass parquet_reader_options:
@@ -70,7 +72,7 @@ cdef extern from "cudf/io/parquet.hpp" namespace "cudf::io" nogil:
         parquet_reader_options build() except +
 
     cdef cudf_io_types.table_with_metadata read_parquet(
-        parquet_reader_options args) except +
+        parquet_reader_options args, cuda_stream_view stream) except +
 
     cdef cppclass parquet_writer_options_base:
         parquet_writer_options_base() except +

@@ -162,6 +162,24 @@ class IR:
         raise NotImplementedError(
             f"Evaluation of plan {type(self).__name__}"
         )  # pragma: no cover
+    
+    def evaluate_children(self, children, cache):
+        import concurrent.futures
+        import os
+        results = []
+        def evaluate_fn(x):
+            return x.evaluate(cache=cache)
+        if os.environ.get("PARALLEL", 0) == "1":
+            print('we paralleling')
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                #evaluate_fn = lambda x: x.evaluate(cache=cache)
+                for result in executor.map(evaluate_fn, children):
+                    results.append(result)
+        else:
+            print("wut")
+            for result in map(evaluate_fn, children):
+                results.append(result)
+        return results
 
 
 @dataclasses.dataclass
@@ -177,6 +195,7 @@ class PythonScan(IR):
         """Validate preconditions."""
         raise NotImplementedError("PythonScan not implemented")
 
+streams = []
 
 @dataclasses.dataclass
 class Scan(IR):
@@ -307,11 +326,21 @@ class Scan(IR):
                 colnames[0],
             )
         elif self.typ == "parquet":
+            from rmm._cuda.stream import Stream
+            filters = (
+                self.predicate.value.as_pylibcudf_ast()
+                if self.predicate is not None
+                else None
+            )
+            stream = Stream()
             tbl_w_meta = plc.io.parquet.read_parquet(
                 plc.io.SourceInfo(self.paths),
                 columns=with_columns,
                 num_rows=nrows,
+                filters=filters,
+                stream=stream
             )
+            streams.append(stream)
             df = DataFrame.from_table(
                 tbl_w_meta.tbl,
                 # TODO: consider nested column names?
@@ -710,8 +739,9 @@ class Join(IR):
 
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        left = self.left.evaluate(cache=cache)
-        right = self.right.evaluate(cache=cache)
+        #left = self.left.evaluate(cache=cache)
+        #right = self.right.evaluate(cache=cache)
+        left, right = self.evaluate_children([self.left, self.right], cache=cache)
         how, join_nulls, zlice, suffix, coalesce = self.options
         suffix = "_right" if suffix is None else suffix
         if how == "cross":
@@ -1088,7 +1118,8 @@ class Union(IR):
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
         # TODO: only evaluate what we need if we have a slice
-        dfs = [df.evaluate(cache=cache) for df in self.dfs]
+        #dfs = [df.evaluate(cache=cache) for df in self.dfs]
+        dfs = self.evaluate_children(self.dfs, cache=cache)
         return DataFrame.from_table(
             plc.concatenate.concatenate([df.table for df in dfs]), dfs[0].column_names
         ).slice(self.zlice)

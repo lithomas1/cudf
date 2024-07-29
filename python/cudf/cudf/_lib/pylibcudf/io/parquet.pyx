@@ -17,6 +17,9 @@ from cudf._lib.pylibcudf.libcudf.io.parquet cimport (
 from cudf._lib.pylibcudf.libcudf.io.types cimport table_with_metadata
 from cudf._lib.pylibcudf.libcudf.types cimport size_type
 
+from rmm._cuda.stream cimport Stream
+from rmm._cuda.stream import DEFAULT_STREAM
+
 
 cdef parquet_reader_options _setup_parquet_reader_options(
     SourceInfo source_info,
@@ -153,6 +156,9 @@ cpdef read_parquet(
     bool use_pandas_metadata = True,
     int64_t skip_rows = 0,
     size_type num_rows = -1,
+    # Cython compiler will crash if we try to assign DEFAULT_STREAM
+    # since it is imported and not cimported
+    Stream stream = None,# = DEFAULT_STREAM,
     # Disabled, these aren't used by cudf-python
     # we should only add them back in if there's user demand
     # ReaderColumnSchema reader_column_schema = None,
@@ -198,7 +204,10 @@ cpdef read_parquet(
         num_rows,
     )
 
+    if stream is None:
+        stream = DEFAULT_STREAM
+
     with nogil:
-        c_result = move(cpp_read_parquet(opts))
+        c_result = move(cpp_read_parquet(opts, stream.view()))
 
     return TableWithMetadata.from_libcudf(c_result)

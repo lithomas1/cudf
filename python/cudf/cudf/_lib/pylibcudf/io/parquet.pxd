@@ -12,6 +12,7 @@ from cudf._lib.pylibcudf.libcudf.io.parquet cimport (
 from cudf._lib.pylibcudf.libcudf.types cimport size_type
 from cudf._lib.pylibcudf.types cimport DataType
 
+from rmm._cuda.stream cimport Stream
 
 cdef class ChunkedParquetReader:
     cdef unique_ptr[cpp_chunked_parquet_reader] reader
@@ -29,6 +30,7 @@ cpdef read_parquet(
     bool use_pandas_metadata = *,
     int64_t skip_rows = *,
     size_type num_rows = *,
+    Stream stream = *,
     # disabled see comment in parquet.pyx for more
     # ReaderColumnSchema reader_column_schema = *,
     # DataType timestamp_type = *
